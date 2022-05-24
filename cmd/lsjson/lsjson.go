@@ -30,6 +30,7 @@ func init() {
 	flags.BoolVarP(cmdFlags, &opt.ShowOrigIDs, "original", "", false, "Show the ID of the underlying Object")
 	flags.BoolVarP(cmdFlags, &opt.FilesOnly, "files-only", "", false, "Show only files in the listing")
 	flags.BoolVarP(cmdFlags, &opt.DirsOnly, "dirs-only", "", false, "Show only directories in the listing")
+	flags.BoolVarP(cmdFlags, &opt.Metadata, "metadata", "", false, "Add metadata to the listing")
 	flags.StringArrayVarP(cmdFlags, &opt.HashTypes, "hash-type", "", nil, "Show only this hash type (may be repeated)")
 	flags.BoolVarP(cmdFlags, &statOnly, "stat", "", false, "Just return the info for the pointed to file")
 }
@@ -80,6 +81,9 @@ returned
 
 If --files-only is not specified directories in addition to the files
 will be returned.
+
+If --metdata is set then an additional Metadata key will be returned.
+This will have metdata in rclone standard format as a JSON object.
 
 if --stat is set then a single JSON blob will be returned about the
 item pointed to. This will return an error if the item isn't found.
