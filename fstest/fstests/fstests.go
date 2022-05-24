@@ -157,13 +157,15 @@ func retry(t *testing.T, what string, f func() error) {
 type objectInfoWithMimeType struct {
 	fs.ObjectInfo
 	mimeType string
+	metadata fs.Metadata
 }
 
 // Return a wrapped fs.ObjectInfo which returns the mime type given
-func overrideMimeType(o fs.ObjectInfo, mimeType string) fs.ObjectInfo {
+func overrideMimeType(o fs.ObjectInfo, mimeType string, metadata fs.Metadata) fs.ObjectInfo {
 	return &objectInfoWithMimeType{
 		ObjectInfo: o,
 		mimeType:   mimeType,
+		metadata:   metadata,
 	}
 }
 
@@ -172,13 +174,23 @@ func (o *objectInfoWithMimeType) MimeType(ctx context.Context) string {
 	return o.mimeType
 }
 
+// Metadata that was overridden
+func (o *objectInfoWithMimeType) Metadata(ctx context.Context) (fs.Metadata, error) {
+	return o.metadata, nil
+}
+
+// check interfaces
+var (
+	_ fs.MimeTyper  = (*objectInfoWithMimeType)(nil)
+	_ fs.Metadataer = (*objectInfoWithMimeType)(nil)
+)
+
 // check interface
-var _ fs.MimeTyper = (*objectInfoWithMimeType)(nil)
 
 // putTestContentsMimeType puts file with given contents to the remote and checks it but unlike TestPutLarge doesn't remove
 //
-// it uploads the object with the mimeType passed in if set
-func putTestContentsMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, contents string, check bool, mimeType string) (string, fs.Object) {
+// it uploads the object with the mimeType and metadata passed in if set
+func putTestContentsMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, contents string, check bool, mimeType string, metadata fs.Metadata) (string, fs.Object) {
 	var (
 		err        error
 		obj        fs.Object
@@ -191,8 +203,16 @@ func putTestContentsMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *f
 
 		file.Size = int64(buf.Len())
 		obji := object.NewStaticObjectInfo(file.Path, file.ModTime, file.Size, true, nil, nil)
-		if mimeType != "" {
-			obji = overrideMimeType(obji, mimeType)
+		if mimeType != "" || metadata != nil {
+			if metadata != nil {
+				ci := fs.GetConfig(ctx)
+				previousMetadata := ci.Metadata
+				ci.Metadata = true
+				defer func() {
+					ci.Metadata = previousMetadata
+				}()
+			}
+			obji = overrideMimeType(obji, mimeType, metadata)
 		}
 		obj, err = f.Put(ctx, in, obji)
 		return err
@@ -209,7 +229,7 @@ func putTestContentsMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *f
 
 // PutTestContents puts file with given contents to the remote and checks it but unlike TestPutLarge doesn't remove
 func PutTestContents(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, contents string, check bool) (string, fs.Object) {
-	return putTestContentsMimeType(ctx, t, f, file, contents, check, "")
+	return putTestContentsMimeType(ctx, t, f, file, contents, check, "", nil)
 }
 
 // testPut puts file with random contents to the remote
@@ -218,8 +238,8 @@ func testPut(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item) (str
 }
 
 // testPutMimeType puts file with random contents to the remote and the mime type given
-func testPutMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, mimeType string) (string, fs.Object) {
-	return putTestContentsMimeType(ctx, t, f, file, random.String(100), true, mimeType)
+func testPutMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, mimeType string, metadata fs.Metadata) (string, fs.Object) {
+	return putTestContentsMimeType(ctx, t, f, file, random.String(100), true, mimeType, metadata)
 }
 
 // TestPutLarge puts file to the remote, checks it and removes it on success.
@@ -348,6 +368,7 @@ func Run(t *testing.T, opt *Opt) {
 		}
 		file1Contents string
 		file1MimeType = "text/csv"
+		file1Metadata = fs.Metadata{"rclone-test": "potato"}
 		file2         = fstest.Item{
 			ModTime: fstest.Time("2001-02-03T04:05:10.123123123Z"),
 			Path:    `hello? sausage/êé/Hello, 世界/ " ' @ < > & ? + ≠/z.txt`,
@@ -867,7 +888,7 @@ func Run(t *testing.T, opt *Opt) {
 			skipIfNotOk(t)
 			file1Contents, _ = testPut(ctx, t, f, &file1)
 			/* file2Contents = */ testPut(ctx, t, f, &file2)
-			file1Contents, _ = testPutMimeType(ctx, t, f, &file1, file1MimeType)
+			file1Contents, _ = testPutMimeType(ctx, t, f, &file1, file1MimeType, file1Metadata)
 			// Note that the next test will check there are no duplicated file names
 
 			// TestFsListDirFile2 tests the files are correctly uploaded by doing
@@ -1353,6 +1374,35 @@ func Run(t *testing.T, opt *Opt) {
 					} else {
 						assert.Equal(t, "text/plain", mimeType)
 					}
+				}
+			})
+
+			// TestObjectMetadata tests the Metadata of the object is correct
+			t.Run("ObjectMetadata", func(t *testing.T) {
+				skipIfNotOk(t)
+				features := f.Features()
+				obj := findObject(ctx, t, f, file1.Path)
+				do, ok := obj.(fs.Metadataer)
+				if !ok {
+					require.False(t, features.ReadMetadata, "Features.ReadMetadata is set but Object.Metadata method not found")
+					t.Skip("Metadata method not supported")
+				}
+				metadata, err := do.Metadata(ctx)
+				require.NoError(t, err)
+				if !features.ReadMetadata {
+					if metadata != nil {
+						require.Equal(t, "", metadata, "Features.ReadMetadata is not set but Object.Metadata returned a non nil Metadata")
+					}
+				} else if features.WriteMetadata {
+					require.NotNil(t, metadata)
+					if features.AnyMetadata {
+						// check all the metadata bits we uploaded are present - there may be more we didn't write
+						for k, v := range file1Metadata {
+							assert.Equal(t, v, metadata[k], "can read and write metadata but failed on key %q", k)
+						}
+					}
+				} else {
+					// Have some metadata here we didn't write - can't really check it!
 				}
 			})
 
