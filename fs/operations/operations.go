@@ -474,6 +474,9 @@ func Copy(ctx context.Context, f fs.Fs, dst fs.Object, remote string, src fs.Obj
 						for _, option := range ci.UploadHeaders {
 							options = append(options, option)
 						}
+						if ci.UploadMetadata != nil {
+							options = append(options, fs.MetadataOption(ci.UploadMetadata))
+						}
 						if doUpdate {
 							actionTaken = "Copied (replaced existing)"
 							err = dst.Update(ctx, in, wrappedSrc, options...)
@@ -1324,6 +1327,9 @@ func Rcat(ctx context.Context, fdst fs.Fs, dstFileName string, in io.ReadCloser,
 	}
 	for _, option := range ci.UploadHeaders {
 		options = append(options, option)
+	}
+	if ci.UploadMetadata != nil {
+		options = append(options, fs.MetadataOption(ci.UploadMetadata))
 	}
 
 	compare := func(dst fs.Object) error {

@@ -37,6 +37,7 @@ var (
 	uploadHeaders   []string
 	downloadHeaders []string
 	headers         []string
+	uploadMetadata  []string
 )
 
 // AddFlags adds the non filing system specific flags to the command
@@ -129,6 +130,7 @@ func AddFlags(ci *fs.ConfigInfo, flagSet *pflag.FlagSet) {
 	flags.StringArrayVarP(flagSet, &uploadHeaders, "header-upload", "", nil, "Set HTTP header for upload transactions")
 	flags.StringArrayVarP(flagSet, &downloadHeaders, "header-download", "", nil, "Set HTTP header for download transactions")
 	flags.StringArrayVarP(flagSet, &headers, "header", "", nil, "Set HTTP header for all transactions")
+	flags.StringArrayVarP(flagSet, &uploadMetadata, "upload-metadata", "", nil, "Add metadata key=value when uploading")
 	flags.BoolVarP(flagSet, &ci.RefreshTimes, "refresh-times", "", ci.RefreshTimes, "Refresh the modtime of remote files")
 	flags.BoolVarP(flagSet, &ci.NoConsole, "no-console", "", ci.NoConsole, "Hide console window (supported on Windows only)")
 	flags.StringVarP(flagSet, &dscp, "dscp", "", "", "Set DSCP value to connections, value or name, e.g. CS1, LE, DF, AF21")
@@ -269,6 +271,21 @@ func SetFlags(ci *fs.ConfigInfo) {
 	}
 	if len(headers) != 0 {
 		ci.Headers = ParseHeaders(headers)
+	}
+	if len(headers) != 0 {
+		ci.Headers = ParseHeaders(headers)
+	}
+	if len(uploadMetadata) != 0 {
+		fs.Debugf(nil, "uploadMetadata %v", uploadMetadata)
+		ci.UploadMetadata = make(fs.Metadata, len(uploadMetadata))
+		for _, kv := range uploadMetadata {
+			equal := strings.IndexRune(kv, '=')
+			if equal < 0 {
+				log.Fatalf("Failed to parse '%s' as metadata key=value.", kv)
+			}
+			ci.UploadMetadata[strings.ToLower(kv[:equal])] = kv[equal+1:]
+		}
+		fs.Debugf(nil, "UploadMetadata %v", ci.UploadMetadata)
 	}
 	if len(dscp) != 0 {
 		if value, ok := parseDSCP(dscp); ok {
