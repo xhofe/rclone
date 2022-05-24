@@ -2427,6 +2427,9 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	f.features = (&fs.Features{
 		ReadMimeType:      true,
 		WriteMimeType:     true,
+		ReadMetadata:      true,
+		WriteMetadata:     true,
+		AnyMetadata:       true,
 		BucketBased:       true,
 		BucketBasedRootOK: true,
 		SetTier:           true,
@@ -4149,10 +4152,18 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	multipart := size < 0 || size >= int64(o.fs.opt.UploadCutoff)
 
-	// Set the mtime in the meta data
-	metadata := map[string]*string{
-		metaMtime: aws.String(swift.TimeToFloatString(modTime)),
+	// Fetch metadata if --metadata is in use
+	meta, err := fs.GetMetadataOptions(ctx, src, options)
+	if err != nil {
+		return fmt.Errorf("failed to read metadata from source object: %w", err)
 	}
+	metadata := make(map[string]*string, len(meta)+2)
+	for k, v := range meta {
+		metadata[k] = aws.String(v)
+	}
+
+	// Set the mtime in the meta data
+	metadata[metaMtime] = aws.String(swift.TimeToFloatString(modTime))
 
 	// read the md5sum if available
 	// - for non multipart
@@ -4350,6 +4361,23 @@ func (o *Object) GetTier() string {
 	return o.storageClass
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (metadata fs.Metadata, err error) {
+	err = o.readMetaData(ctx)
+	if err != nil {
+		return nil, err
+	}
+	metadata = make(fs.Metadata, len(o.meta))
+	for k, v := range o.meta {
+		if v != nil {
+			metadata[strings.ToLower(k)] = *v
+		}
+	}
+	return metadata, nil
+}
+
 // Check the interfaces are satisfied
 var (
 	_ fs.Fs          = &Fs{}
@@ -4362,4 +4390,5 @@ var (
 	_ fs.MimeTyper   = &Object{}
 	_ fs.GetTierer   = &Object{}
 	_ fs.SetTierer   = &Object{}
+	_ fs.Metadataer  = &Object{}
 )
