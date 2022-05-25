@@ -133,6 +133,7 @@ type ConfigInfo struct {
 	DisableHTTP2           bool
 	HumanReadable          bool
 	KvLockTime             time.Duration // maximum time to keep key-value database locked by process
+	Metadata               bool
 }
 
 // NewConfig creates a new config with everything set to the default
