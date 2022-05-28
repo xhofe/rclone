@@ -94,6 +94,7 @@ var configShowCommand = &cobra.Command{
 			config.ShowConfig()
 		} else {
 			name := strings.TrimRight(args[0], ":")
+			fmt.Printf("Configuration of %q remote:\n", name)
 			config.ShowRemote(name)
 		}
 	},
