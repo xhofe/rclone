@@ -24,7 +24,7 @@ import (
 var zeroes = string(make([]byte, 100))
 
 func newItemTestCache(t *testing.T) (r *fstest.Run, c *Cache) {
-	opt := vfscommon.DefaultOpt
+	opt := vfscommon.Opt
 
 	// Disable the cache cleaner as it interferes with these tests
 	opt.CachePollInterval = 0
@@ -409,7 +409,13 @@ func TestItemReloadCacheStale(t *testing.T) {
 	assert.NotEqual(t, contents, contents2)
 
 	// Re-open with updated object
+	oldFingerprint := item.info.Fingerprint
+	assert.NotEqual(t, "", oldFingerprint)
 	require.NoError(t, item.Open(obj))
+
+	// Make sure fingerprint was updated
+	assert.NotEqual(t, oldFingerprint, item.info.Fingerprint)
+	assert.NotEqual(t, "", item.info.Fingerprint)
 
 	// Check size is now 110
 	size, err = item.GetSize()
@@ -422,7 +428,7 @@ func TestItemReloadCacheStale(t *testing.T) {
 	assert.Equal(t, int64(110), fi.Size())
 
 	// Write to the file to make it dirty
-	// This checks we aren't re-using stale data
+	// This checks we aren't reusing stale data
 	n, err := item.WriteAt([]byte("HELLO"), 0)
 	require.NoError(t, err)
 	assert.Equal(t, 5, n)
