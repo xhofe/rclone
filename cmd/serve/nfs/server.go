@@ -1,10 +1,10 @@
 //go:build unix
-// +build unix
 
 package nfs
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	nfs "github.com/willscott/go-nfs"
@@ -16,10 +16,11 @@ import (
 
 // Server contains everything to run the Server
 type Server struct {
-	opt      Options
-	handler  nfs.Handler
-	ctx      context.Context // for global config
-	listener net.Listener
+	opt                 Options
+	handler             nfs.Handler
+	ctx                 context.Context // for global config
+	listener            net.Listener
+	UnmountedExternally bool
 }
 
 // NewServer creates a new server
@@ -36,12 +37,15 @@ func NewServer(ctx context.Context, vfs *vfs.VFS, opt *Options) (s *Server, err 
 		ctx: ctx,
 		opt: *opt,
 	}
-	s.handler = newHandler(vfs)
+	s.handler, err = NewHandler(ctx, vfs, opt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make NFS handler: %w", err)
+	}
 	s.listener, err = net.Listen("tcp", s.opt.ListenAddr)
 	if err != nil {
-		fs.Errorf(nil, "NFS server failed to listen: %v\n", err)
+		return nil, fmt.Errorf("failed to open listening socket: %w", err)
 	}
-	return
+	return s, nil
 }
 
 // Addr returns the listening address of the server
