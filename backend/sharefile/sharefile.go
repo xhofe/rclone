@@ -97,7 +97,6 @@ import (
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/rest"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -115,13 +114,11 @@ const (
 )
 
 // Generate a new oauth2 config which we will update when we know the TokenURL
-func newOauthConfig(tokenURL string) *oauth2.Config {
-	return &oauth2.Config{
-		Scopes: nil,
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  "https://secure.sharefile.com/oauth/authorize",
-			TokenURL: tokenURL,
-		},
+func newOauthConfig(tokenURL string) *oauthutil.Config {
+	return &oauthutil.Config{
+		Scopes:       nil,
+		AuthURL:      "https://secure.sharefile.com/oauth/authorize",
+		TokenURL:     tokenURL,
 		ClientID:     rcloneClientID,
 		ClientSecret: obscure.MustReveal(rcloneEncryptedClientSecret),
 		RedirectURL:  oauthutil.RedirectPublicSecureURL,
@@ -136,7 +133,7 @@ func init() {
 		NewFs:       NewFs,
 		Config: func(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
 			oauthConfig := newOauthConfig("")
-			checkAuth := func(oauthConfig *oauth2.Config, auth *oauthutil.AuthResult) error {
+			checkAuth := func(oauthConfig *oauthutil.Config, auth *oauthutil.AuthResult) error {
 				if auth == nil || auth.Form == nil {
 					return errors.New("endpoint not found in response")
 				}
@@ -147,7 +144,7 @@ func init() {
 				}
 				endpoint := "https://" + subdomain + "." + apicp
 				m.Set("endpoint", endpoint)
-				oauthConfig.Endpoint.TokenURL = endpoint + tokenPath
+				oauthConfig.TokenURL = endpoint + tokenPath
 				return nil
 			}
 			return oauthutil.ConfigOut("", &oauthutil.Options{
@@ -1176,6 +1173,12 @@ func (f *Fs) DirCacheFlush() {
 	f.dirCache.ResetRoot()
 }
 
+// Shutdown shutdown the fs
+func (f *Fs) Shutdown(ctx context.Context) error {
+	f.tokenRenewer.Shutdown()
+	return nil
+}
+
 // Hashes returns the supported hash sets.
 func (f *Fs) Hashes() hash.Set {
 	return hash.Set(hash.MD5)
@@ -1466,6 +1469,7 @@ var (
 	_ fs.Copier   = (*Fs)(nil)
 	// _ fs.PutStreamer     = (*Fs)(nil)
 	_ fs.DirCacheFlusher = (*Fs)(nil)
+	_ fs.Shutdowner      = (*Fs)(nil)
 	_ fs.Object          = (*Object)(nil)
 	_ fs.IDer            = (*Object)(nil)
 )
