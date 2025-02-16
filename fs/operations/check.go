@@ -20,6 +20,7 @@ import (
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/march"
 	"github.com/rclone/rclone/lib/readers"
+	"golang.org/x/text/unicode/norm"
 )
 
 // checkFn is the type of the checking function used in CheckFn()
@@ -48,6 +49,7 @@ type CheckOpt struct {
 // checkMarch is used to march over two Fses in the same way as
 // sync/copy
 type checkMarch struct {
+	ctx             context.Context
 	ioMu            sync.Mutex
 	wg              sync.WaitGroup
 	tokens          chan struct{}
@@ -66,10 +68,10 @@ func (c *checkMarch) report(o fs.DirEntry, out io.Writer, sigil rune) {
 
 func (c *checkMarch) reportFilename(filename string, out io.Writer, sigil rune) {
 	if out != nil {
-		syncFprintf(out, "%s\n", filename)
+		SyncFprintf(out, "%s\n", filename)
 	}
 	if c.opt.Combined != nil {
-		syncFprintf(c.opt.Combined, "%c %s\n", sigil, filename)
+		SyncFprintf(c.opt.Combined, "%c %s\n", sigil, filename)
 	}
 }
 
@@ -82,7 +84,7 @@ func (c *checkMarch) DstOnly(dst fs.DirEntry) (recurse bool) {
 		}
 		err := fmt.Errorf("file not in %v", c.opt.Fsrc)
 		fs.Errorf(dst, "%v", err)
-		_ = fs.CountError(err)
+		_ = fs.CountError(c.ctx, err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
 		c.report(dst, c.opt.MissingOnSrc, '-')
@@ -104,7 +106,7 @@ func (c *checkMarch) SrcOnly(src fs.DirEntry) (recurse bool) {
 	case fs.Object:
 		err := fmt.Errorf("file not in %v", c.opt.Fdst)
 		fs.Errorf(src, "%v", err)
-		_ = fs.CountError(err)
+		_ = fs.CountError(c.ctx, err)
 		c.differences.Add(1)
 		c.dstFilesMissing.Add(1)
 		c.report(src, c.opt.MissingOnDst, '+')
@@ -154,13 +156,13 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 				differ, noHash, err := c.checkIdentical(ctx, dstX, srcX)
 				if err != nil {
 					fs.Errorf(src, "%v", err)
-					_ = fs.CountError(err)
+					_ = fs.CountError(ctx, err)
 					c.report(src, c.opt.Error, '!')
 				} else if differ {
 					c.differences.Add(1)
 					err := errors.New("files differ")
 					// the checkFn has already logged the reason
-					_ = fs.CountError(err)
+					_ = fs.CountError(ctx, err)
 					c.report(src, c.opt.Differ, '*')
 				} else {
 					c.matches.Add(1)
@@ -176,7 +178,7 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 		} else {
 			err := fmt.Errorf("is file on %v but directory on %v", c.opt.Fsrc, c.opt.Fdst)
 			fs.Errorf(src, "%v", err)
-			_ = fs.CountError(err)
+			_ = fs.CountError(ctx, err)
 			c.differences.Add(1)
 			c.dstFilesMissing.Add(1)
 			c.report(src, c.opt.MissingOnDst, '+')
@@ -189,7 +191,7 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 		}
 		err := fmt.Errorf("is file on %v but directory on %v", c.opt.Fdst, c.opt.Fsrc)
 		fs.Errorf(dst, "%v", err)
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
 		c.report(dst, c.opt.MissingOnSrc, '-')
@@ -213,6 +215,7 @@ func CheckFn(ctx context.Context, opt *CheckOpt) error {
 		return errors.New("internal error: nil check function")
 	}
 	c := &checkMarch{
+		ctx:    ctx,
 		tokens: make(chan struct{}, ci.Checkers),
 		opt:    *opt,
 	}
@@ -340,7 +343,7 @@ func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ boo
 	if err != nil {
 		return true, fmt.Errorf("failed to open %q: %w", dst, err)
 	}
-	tr1 := accounting.Stats(ctx).NewTransfer(dst)
+	tr1 := accounting.Stats(ctx).NewTransfer(dst, nil)
 	defer func() {
 		tr1.Done(ctx, nil) // error handling is done by the caller
 	}()
@@ -350,7 +353,7 @@ func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ boo
 	if err != nil {
 		return true, fmt.Errorf("failed to open %q: %w", src, err)
 	}
-	tr2 := accounting.Stats(ctx).NewTransfer(dst)
+	tr2 := accounting.Stats(ctx).NewTransfer(dst, nil)
 	defer func() {
 		tr2.Done(ctx, nil) // error handling is done by the caller
 	}()
@@ -373,6 +376,28 @@ func CheckDownload(ctx context.Context, opt *CheckOpt) error {
 		return differ, false, nil
 	}
 	return CheckFn(ctx, &optCopy)
+}
+
+// ApplyTransforms handles --no-unicode-normalization and --ignore-case-sync for CheckSum
+// so that it matches behavior of Check (where it's handled by March)
+func ApplyTransforms(ctx context.Context, s string) string {
+	ci := fs.GetConfig(ctx)
+	return ToNormal(s, !ci.NoUnicodeNormalization, ci.IgnoreCaseSync)
+}
+
+// ToNormal normalizes case and unicode form and returns the transformed string.
+// It is similar to ApplyTransforms but does not use a context.
+// If normUnicode == true, s will be transformed to NFC.
+// If normCase == true, s will be transformed to lowercase.
+// If both are true, both transformations will be performed.
+func ToNormal(s string, normUnicode, normCase bool) string {
+	if normUnicode {
+		s = norm.NFC.String(s)
+	}
+	if normCase {
+		s = strings.ToLower(s)
+	}
+	return s
 }
 
 // CheckSum checks filesystem hashes against a SUM file
@@ -407,6 +432,7 @@ func CheckSum(ctx context.Context, fsrc, fsum fs.Fs, sumFile string, hashType ha
 
 	ci := fs.GetConfig(ctx)
 	c := &checkMarch{
+		ctx:    ctx,
 		tokens: make(chan struct{}, ci.Checkers),
 		opt:    *opt,
 	}
@@ -427,7 +453,7 @@ func CheckSum(ctx context.Context, fsrc, fsum fs.Fs, sumFile string, hashType ha
 		// filesystem missed the file, sum wasn't consumed
 		err := fmt.Errorf("file not in %v", opt.Fdst)
 		fs.Errorf(filename, "%v", err)
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		if lastErr == nil {
 			lastErr = err
 		}
@@ -440,10 +466,10 @@ func CheckSum(ctx context.Context, fsrc, fsum fs.Fs, sumFile string, hashType ha
 
 // checkSum checks single object against golden hashes
 func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool, hashes HashSums, hashType hash.Type) {
-	remote := obj.Remote()
+	normalizedRemote := ApplyTransforms(ctx, obj.Remote())
 	c.ioMu.Lock()
-	sumHash, sumFound := hashes[remote]
-	hashes[remote] = "" // mark sum as consumed
+	sumHash, sumFound := hashes[normalizedRemote]
+	hashes[normalizedRemote] = "" // mark sum as consumed
 	c.ioMu.Unlock()
 
 	if !sumFound && c.opt.OneWay {
@@ -456,7 +482,7 @@ func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool,
 
 	if !sumFound {
 		err = errors.New("sum not found")
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		fs.Errorf(obj, "%v", err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
@@ -487,7 +513,7 @@ func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool,
 		if in, err = Open(ctx, obj); err != nil {
 			return
 		}
-		tr := accounting.Stats(ctx).NewTransfer(obj)
+		tr := accounting.Stats(ctx).NewTransfer(obj, nil)
 		in = tr.Account(ctx, in).WithBuffer() // account and buffer the transfer
 		defer func() {
 			tr.Done(ctx, nil) // will close the stream
@@ -505,12 +531,12 @@ func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool,
 func (c *checkMarch) matchSum(ctx context.Context, sumHash, objHash string, obj fs.Object, err error, hashType hash.Type) {
 	switch {
 	case err != nil:
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		fs.Errorf(obj, "Failed to calculate hash: %v", err)
 		c.report(obj, c.opt.Error, '!')
 	case sumHash == "":
 		err = errors.New("duplicate file")
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		fs.Errorf(obj, "%v", err)
 		c.report(obj, c.opt.Error, '!')
 	case objHash == "":
@@ -525,7 +551,7 @@ func (c *checkMarch) matchSum(ctx context.Context, sumHash, objHash string, obj 
 		c.report(obj, c.opt.Match, '=')
 	default:
 		err = errors.New("files differ")
-		_ = fs.CountError(err)
+		_ = fs.CountError(ctx, err)
 		fs.Debugf(nil, "%v = %s (sum)", hashType, sumHash)
 		fs.Debugf(obj, "%v = %s (%v)", hashType, objHash, c.opt.Fdst)
 		fs.Errorf(obj, "%v", err)
@@ -563,7 +589,7 @@ func ParseSumFile(ctx context.Context, sumFile fs.Object) (HashSums, error) {
 			continue
 		}
 
-		fields := re.FindStringSubmatch(line)
+		fields := re.FindStringSubmatch(ApplyTransforms(ctx, line))
 		if fields == nil {
 			numWarn++
 			if numWarn <= maxWarn {

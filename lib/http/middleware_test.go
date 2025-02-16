@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,11 +14,13 @@ import (
 
 func TestMiddlewareAuth(t *testing.T) {
 	servers := []struct {
-		name string
-		http Config
-		auth AuthConfig
-		user string
-		pass string
+		name         string
+		expectedUser string
+		remoteUser   string
+		http         Config
+		auth         AuthConfig
+		user         string
+		pass         string
 	}{
 		{
 			name: "Basic",
@@ -84,9 +87,32 @@ func TestMiddlewareAuth(t *testing.T) {
 			},
 			user: "custom",
 			pass: "custom",
+		}, {
+			name:         "UserFromHeader",
+			remoteUser:   "remoteUser",
+			expectedUser: "remoteUser",
+			http: Config{
+				ListenAddr: []string{"127.0.0.1:0"},
+			},
+			auth: AuthConfig{
+				UserFromHeader: "X-Remote-User",
+			},
+		}, {
+			name:         "UserFromHeader/MixedWithHtPasswd",
+			remoteUser:   "remoteUser",
+			expectedUser: "md5",
+			http: Config{
+				ListenAddr: []string{"127.0.0.1:0"},
+			},
+			auth: AuthConfig{
+				UserFromHeader: "X-Remote-User",
+				Realm:          "test",
+				HtPasswd:       "./testdata/.htpasswd",
+			},
+			user: "md5",
+			pass: "md5",
 		},
 	}
-
 	for _, ss := range servers {
 		t.Run(ss.name, func(t *testing.T) {
 			s, err := NewServer(context.Background(), WithConfig(ss.http), WithAuth(ss.auth))
@@ -96,7 +122,12 @@ func TestMiddlewareAuth(t *testing.T) {
 			}()
 
 			expected := []byte("secret-page")
-			s.Router().Mount("/", testEchoHandler(expected))
+			if ss.expectedUser != "" {
+				s.Router().Mount("/", testAuthUserHandler())
+			} else {
+				s.Router().Mount("/", testEchoHandler(expected))
+			}
+
 			s.Serve()
 
 			url := testGetServerURL(t, s)
@@ -113,18 +144,24 @@ func TestMiddlewareAuth(t *testing.T) {
 				}()
 
 				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using no creds should return unauthorized")
-
-				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
-				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
-				require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
+				if ss.auth.UserFromHeader == "" {
+					wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
+					require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
+					require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
+				}
 			})
-
 			t.Run("BadCreds", func(t *testing.T) {
 				client := &http.Client{}
 				req, err := http.NewRequest("GET", url, nil)
 				require.NoError(t, err)
 
-				req.SetBasicAuth(ss.user+"BAD", ss.pass+"BAD")
+				if ss.user != "" {
+					req.SetBasicAuth(ss.user+"BAD", ss.pass+"BAD")
+				}
+
+				if ss.auth.UserFromHeader != "" {
+					req.Header.Set(ss.auth.UserFromHeader, "/test:")
+				}
 
 				resp, err := client.Do(req)
 				require.NoError(t, err)
@@ -133,10 +170,11 @@ func TestMiddlewareAuth(t *testing.T) {
 				}()
 
 				require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "using bad creds should return unauthorized")
-
-				wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
-				require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
-				require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
+				if ss.auth.UserFromHeader == "" {
+					wwwAuthHeader := resp.Header.Get("WWW-Authenticate")
+					require.NotEmpty(t, wwwAuthHeader, "resp should contain WWW-Authtentication header")
+					require.Contains(t, wwwAuthHeader, fmt.Sprintf("realm=%q", ss.auth.Realm), "WWW-Authtentication header should contain relam")
+				}
 			})
 
 			t.Run("GoodCreds", func(t *testing.T) {
@@ -144,7 +182,13 @@ func TestMiddlewareAuth(t *testing.T) {
 				req, err := http.NewRequest("GET", url, nil)
 				require.NoError(t, err)
 
-				req.SetBasicAuth(ss.user, ss.pass)
+				if ss.user != "" {
+					req.SetBasicAuth(ss.user, ss.pass)
+				}
+
+				if ss.auth.UserFromHeader != "" {
+					req.Header.Set(ss.auth.UserFromHeader, ss.remoteUser)
+				}
 
 				resp, err := client.Do(req)
 				require.NoError(t, err)
@@ -154,7 +198,11 @@ func TestMiddlewareAuth(t *testing.T) {
 
 				require.Equal(t, http.StatusOK, resp.StatusCode, "using good creds should return ok")
 
-				testExpectRespBody(t, resp, expected)
+				if ss.expectedUser != "" {
+					testExpectRespBody(t, resp, []byte(ss.expectedUser))
+				} else {
+					testExpectRespBody(t, resp, expected)
+				}
 			})
 		})
 	}
@@ -329,8 +377,11 @@ var _testCORSHeaderKeys = []string{
 
 func TestMiddlewareCORS(t *testing.T) {
 	servers := []struct {
-		name string
-		http Config
+		name    string
+		http    Config
+		tryRoot bool
+		method  string
+		status  int
 	}{
 		{
 			name: "CustomOrigin",
@@ -338,6 +389,40 @@ func TestMiddlewareCORS(t *testing.T) {
 				ListenAddr:  []string{"127.0.0.1:0"},
 				AllowOrigin: "http://test.rclone.org",
 			},
+			method: "GET",
+			status: http.StatusOK,
+		},
+		{
+			name: "WithBaseURL",
+			http: Config{
+				ListenAddr:  []string{"127.0.0.1:0"},
+				AllowOrigin: "http://test.rclone.org",
+				BaseURL:     "/baseurl/",
+			},
+			method: "GET",
+			status: http.StatusOK,
+		},
+		{
+			name: "WithBaseURLTryRootGET",
+			http: Config{
+				ListenAddr:  []string{"127.0.0.1:0"},
+				AllowOrigin: "http://test.rclone.org",
+				BaseURL:     "/baseurl/",
+			},
+			method:  "GET",
+			status:  http.StatusNotFound,
+			tryRoot: true,
+		},
+		{
+			name: "WithBaseURLTryRootOPTIONS",
+			http: Config{
+				ListenAddr:  []string{"127.0.0.1:0"},
+				AllowOrigin: "http://test.rclone.org",
+				BaseURL:     "/baseurl/",
+			},
+			method:  "OPTIONS",
+			status:  http.StatusOK,
+			tryRoot: true,
 		},
 	}
 
@@ -354,9 +439,14 @@ func TestMiddlewareCORS(t *testing.T) {
 			s.Serve()
 
 			url := testGetServerURL(t, s)
+			// Try the query on the root, ignoring the baseURL
+			if ss.tryRoot {
+				slash := strings.LastIndex(url[:len(url)-1], "/")
+				url = url[:slash+1]
+			}
 
 			client := &http.Client{}
-			req, err := http.NewRequest("GET", url, nil)
+			req, err := http.NewRequest(ss.method, url, nil)
 			require.NoError(t, err)
 
 			resp, err := client.Do(req)
@@ -365,8 +455,11 @@ func TestMiddlewareCORS(t *testing.T) {
 				_ = resp.Body.Close()
 			}()
 
-			require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+			require.Equal(t, ss.status, resp.StatusCode, "should return expected error code")
 
+			if ss.status == http.StatusNotFound {
+				return
+			}
 			testExpectRespBody(t, resp, expected)
 
 			for _, key := range _testCORSHeaderKeys {

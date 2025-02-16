@@ -37,18 +37,51 @@ This file describes how to make the various kinds of releases
 
 ## Update dependencies
 
-Early in the next release cycle update the dependencies
+Early in the next release cycle update the dependencies.
 
   * Review any pinned packages in go.mod and remove if possible
-  * make updatedirect
-  * make GOTAGS=cmount
-  * make compiletest
-  * git commit -a -v
-  * make update
-  * make GOTAGS=cmount
-  * make compiletest
+  * `make updatedirect`
+  * `make GOTAGS=cmount`
+  * `make compiletest`
+  * Fix anything which doesn't compile at this point and commit changes here
+  * `git commit -a -v -m "build: update all dependencies"`
+
+If the `make updatedirect` upgrades the version of go in the `go.mod`
+
+    go 1.22.0
+    
+then go to manual mode. `go1.22` here is the lowest supported version
+in the `go.mod`.
+
+If `make updatedirect` added a `toolchain` directive then remove it.
+We don't want to force a toolchain on our users. Linux packagers are
+often using a version of Go that is a few versions out of date.
+
+```
+go list -m -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' all > /tmp/potential-upgrades
+go get -d $(cat /tmp/potential-upgrades)
+go mod tidy -go=1.22 -compat=1.22
+```
+
+If the `go mod tidy` fails use the output from it to remove the
+package which can't be upgraded from `/tmp/potential-upgrades` when
+done
+
+```
+git co go.mod go.sum
+```
+
+And try again.
+
+Optionally upgrade the direct and indirect dependencies. This is very
+likely to fail if the manual method was used abve - in that case
+ignore it as it is too time consuming to fix.
+
+  * `make update`
+  * `make GOTAGS=cmount`
+  * `make compiletest`
   * roll back any updates which didn't compile
-  * git commit -a -v --amend
+  * `git commit -a -v --amend`
   * **NB** watch out for this changing the default go version in `go.mod`
 
 Note that `make update` updates all direct and indirect dependencies
@@ -56,6 +89,19 @@ and there can occasionally be forwards compatibility problems with
 doing that so it may be necessary to roll back dependencies to the
 version specified by `make updatedirect` in order to get rclone to
 build.
+
+Once it compiles locally, push it on a test branch and commit fixes
+until the tests pass.
+
+### Major versions
+
+The above procedure will not upgrade major versions, so v2 to v3.
+However this tool can show which major versions might need to be
+upgraded:
+
+    go run github.com/icholy/gomajor@latest list -major
+
+Expect API breakage when updating major versions.
 
 ## Tidy beta
 
@@ -85,8 +131,8 @@ Now
 
   * git co ${BASE_TAG}-stable
   * git cherry-pick any fixes
-  * Do the steps as above
   * make startstable
+  * Do the steps as above
   * git co master
   * `#` cherry pick the changes to the changelog - check the diff to make sure it is correct
   * git checkout ${BASE_TAG}-stable docs/content/changelog.md
@@ -124,32 +170,23 @@ Cherry pick any changes back to master and the stable branch if it is active.
 
 ## Making a manual build of docker
 
-The rclone docker image should autobuild on via GitHub actions.  If it doesn't
-or needs to be updated then rebuild like this.
-
-See: https://github.com/ilteoood/docker_buildx/issues/19
-See: https://github.com/ilteoood/docker_buildx/blob/master/scripts/install_buildx.sh
+To do a basic build of rclone's docker image to debug builds locally:
 
 ```
-git co v1.54.1
-docker pull golang
-export DOCKER_CLI_EXPERIMENTAL=enabled
-docker buildx create --name actions_builder --use
-docker run --rm --privileged docker/binfmt:820fdd95a9972a5308930a2bdfb8573dd4447ad3
-docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-SUPPORTED_PLATFORMS=$(docker buildx inspect --bootstrap | grep 'Platforms:*.*' | cut -d : -f2,3)
-echo "Supported platforms: $SUPPORTED_PLATFORMS"
-docker buildx build --platform linux/amd64,linux/386,linux/arm64,linux/arm/v7 -t rclone/rclone:1.54.1 -t rclone/rclone:1.54 -t rclone/rclone:1 -t rclone/rclone:latest --push .
-docker buildx stop actions_builder
+docker buildx build --load -t rclone/rclone:testing --progress=plain .
+docker run --rm rclone/rclone:testing version
 ```
 
-### Old build for linux/amd64 only
+To test the multipatform build
 
 ```
-docker pull golang
-docker build --rm --ulimit memlock=67108864  -t rclone/rclone:1.52.0 -t rclone/rclone:1.52 -t rclone/rclone:1 -t rclone/rclone:latest .
-docker push rclone/rclone:1.52.0
-docker push rclone/rclone:1.52
-docker push rclone/rclone:1
-docker push rclone/rclone:latest
+docker buildx build -t rclone/rclone:testing --progress=plain --platform linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6 .
+```
+
+To make a full build then set the tags correctly and add `--push`
+
+Note that you can't only build one architecture - you need to build them all.
+
+```
+docker buildx build --platform linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6 -t rclone/rclone:1.54.1 -t rclone/rclone:1.54 -t rclone/rclone:1 -t rclone/rclone:latest --push .
 ```

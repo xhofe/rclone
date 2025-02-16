@@ -43,7 +43,6 @@ import (
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/rest"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -59,12 +58,10 @@ const (
 // Globals
 var (
 	// Description of how to auth for this app
-	oauthConfig = &oauth2.Config{
-		Scopes: nil,
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  "https://www.premiumize.me/authorize",
-			TokenURL: "https://www.premiumize.me/token",
-		},
+	oauthConfig = &oauthutil.Config{
+		Scopes:       nil,
+		AuthURL:      "https://www.premiumize.me/authorize",
+		TokenURL:     "https://www.premiumize.me/token",
 		ClientID:     rcloneClientID,
 		ClientSecret: obscure.MustReveal(rcloneEncryptedClientSecret),
 		RedirectURL:  oauthutil.RedirectURL,
@@ -770,6 +767,12 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 	return o.(*Object).url, nil
 }
 
+// Shutdown shutdown the fs
+func (f *Fs) Shutdown(ctx context.Context) error {
+	f.tokenRenewer.Shutdown()
+	return nil
+}
+
 // About gets quota information
 func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 	var resp *http.Response
@@ -1110,6 +1113,7 @@ var (
 	_ fs.DirCacheFlusher = (*Fs)(nil)
 	_ fs.Abouter         = (*Fs)(nil)
 	_ fs.PublicLinker    = (*Fs)(nil)
+	_ fs.Shutdowner      = (*Fs)(nil)
 	_ fs.Object          = (*Object)(nil)
 	_ fs.MimeTyper       = (*Object)(nil)
 	_ fs.IDer            = (*Object)(nil)

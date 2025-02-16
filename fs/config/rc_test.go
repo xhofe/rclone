@@ -33,8 +33,8 @@ func TestRc(t *testing.T) {
 	out, err := call.Fn(ctx, in)
 	require.NoError(t, err)
 	require.Nil(t, out)
-	assert.Equal(t, "local", config.FileGet(testName, "type"))
-	assert.Equal(t, "sausage", config.FileGet(testName, "test_key"))
+	assert.Equal(t, "local", config.GetValue(testName, "type"))
+	assert.Equal(t, "sausage", config.GetValue(testName, "test_key"))
 
 	// The sub tests rely on the remote created above but they can
 	// all be run independently
@@ -102,9 +102,9 @@ func TestRc(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, out)
 
-		assert.Equal(t, "local", config.FileGet(testName, "type"))
-		assert.Equal(t, "rutabaga", config.FileGet(testName, "test_key"))
-		assert.Equal(t, "cabbage", config.FileGet(testName, "test_key2"))
+		assert.Equal(t, "local", config.GetValue(testName, "type"))
+		assert.Equal(t, "rutabaga", config.GetValue(testName, "test_key"))
+		assert.Equal(t, "cabbage", config.GetValue(testName, "test_key2"))
 	})
 
 	t.Run("Password", func(t *testing.T) {
@@ -122,9 +122,9 @@ func TestRc(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, out)
 
-		assert.Equal(t, "local", config.FileGet(testName, "type"))
-		assert.Equal(t, "rutabaga", obscure.MustReveal(config.FileGet(testName, "test_key")))
-		assert.Equal(t, pw2, obscure.MustReveal(config.FileGet(testName, "test_key2")))
+		assert.Equal(t, "local", config.GetValue(testName, "type"))
+		assert.Equal(t, "rutabaga", obscure.MustReveal(config.GetValue(testName, "test_key")))
+		assert.Equal(t, pw2, obscure.MustReveal(config.GetValue(testName, "test_key2")))
 	})
 
 	// Delete the test remote
@@ -136,8 +136,8 @@ func TestRc(t *testing.T) {
 	out, err = call.Fn(context.Background(), in)
 	require.NoError(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, "", config.FileGet(testName, "type"))
-	assert.Equal(t, "", config.FileGet(testName, "test_key"))
+	assert.Equal(t, "", config.GetValue(testName, "type"))
+	assert.Equal(t, "", config.GetValue(testName, "test_key"))
 }
 
 func TestRcProviders(t *testing.T) {
@@ -176,4 +176,15 @@ func TestRcSetPath(t *testing.T) {
 	_, err = call.Fn(context.Background(), in)
 	require.NoError(t, err)
 	assert.Equal(t, oldPath, config.GetConfigPath())
+}
+
+func TestRcPaths(t *testing.T) {
+	call := rc.Calls.Get("config/paths")
+	assert.NotNil(t, call)
+	out, err := call.Fn(context.Background(), nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.GetConfigPath(), out["config"])
+	assert.Equal(t, config.GetCacheDir(), out["cache"])
+	assert.Equal(t, os.TempDir(), out["temp"])
 }
